@@ -1,0 +1,23 @@
+{
+	"name": "dargs",
+	"description": "TODO Description.",
+	"copyright": "Copyright © 2015, manu",
+  "license": "MIT",
+	"authors": [ "Manuel Maier" ],
+
+  "importPaths": [ "code" ],
+  "sourcePaths": [ "code" ],
+
+  "targetType": "library",
+  "targetPath": "output/lib",
+
+  "dependencies":
+  {
+    "pathlib": "*"
+  },
+
+  "subPackages":
+  [
+    "./tests/"
+  ]
+}

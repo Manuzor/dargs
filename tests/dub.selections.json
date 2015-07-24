@@ -1,0 +1,7 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"pathlib": "0.1.2",
+		"d-unit": "0.7.2"
+	}
+}

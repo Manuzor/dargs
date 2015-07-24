@@ -1,0 +1,17 @@
+{
+  "name": "tests",
+  "description": "Tests for dargs.",
+  "authors": [ "Manuel Maier" ],
+
+  "importPaths": [ "." ],
+  "sourcePaths": [ "." ],
+
+  "targetType": "executable",
+  "targetPath": "../output/tests",
+
+  "dependencies":
+  {
+    "dargs": { "version": "*", "path": "../" },
+    "d-unit": "*"
+  }
+}
