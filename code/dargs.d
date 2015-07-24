@@ -5,6 +5,7 @@ import std.algorithm;
 import std.array;
 import std.range;
 import std.typetuple : allSatisfy;
+import std.traits : hasMember;
 import io = std.stdio;
 
 
@@ -13,6 +14,7 @@ struct ArgDesc
   string member;
   string name;
   string[] flagNames;
+  int index = -1; // <0 means it is an option, >=0 means it is a positional argument.
   string helpText;
   bool isRequired = false;
 }
@@ -27,14 +29,15 @@ private template Tuple(T...)
   alias Tuple = T;
 }
 
-private ArgDesc[] collectArgDescs(T)()
+ArgDesc[] collectArgDescs(T)()
 {
   ArgDesc[] all;
+  int currentIndex = 0;
 members:
   foreach(memberName; __traits(allMembers, T))
   {
     debug pragma(msg, "Member: " ~ memberName);
-    static if(__traits(compiles, typeof(__traits(getMember, T, memberName))))
+    static if(memberName[0] != '_' && __traits(compiles, typeof(__traits(getMember, T, memberName))))
     {
       alias Member = typeof(__traits(getMember, T, memberName));
       alias Attributes = Tuple!(__traits(getAttributes, __traits(getMember, T, memberName)));
@@ -74,22 +77,27 @@ members:
           debug pragma(msg, "Warning: Unrecognized attribute type: " ~ Attr.stringof);
         }
       }
+      if(desc.flagNames.empty) {
+        // We have a positional argument, so we set its index;
+        desc.index = currentIndex++;
+      }
       all ~= desc;
     }
   }
   return all;
 }
 
-private struct _Hidden {}
 
 mixin template CommandLineArguments()
 {
-  alias Hidden = _Hidden;
-
   alias This = typeof(this);
 
-  @Hidden
-  ArgDesc[] _argDescriptions = collectArgDescs!This();
+  static const(ArgDesc[]) _argDescriptions = collectArgDescs!This();
+
+  @Hidden string optionPrefixShort = "-";
+  @Hidden string optionPrefixLong = "--";
+
+  @disable this(ArgDesc[]);
 
   /// Parse the run-time args.
   /// Return: The remaining args that have not been parsed.
@@ -106,18 +114,71 @@ mixin template CommandLineArguments()
   string[] parse(string[] argsIn)
   {
     import std.traits;
+    import std.algorithm;
+    import std.array;
+    import std.range;
+    import std.conv : to;
+    import std.format;
+
+    string[] errors;
 
     auto args = argsIn.dup;
 
-    io.writefln("Arg descriptions:%-(\n  %s%)", _argDescriptions);
+    debug io.writefln("Arg descriptions:%(\n  %)", _argDescriptions);
+
+    auto positionalArgDescs = _argDescriptions.filter!(a => a.index >= 0);
+
+    foreach(ref arg; argsIn)
+    {
+      // Long options.
+      {
+        auto longArg = arg.find(optionPrefixLong);
+        if(arg.startsWith(optionPrefixLong)) {
+          io.writefln("Found long arg: %s", arg);
+          args.popFront();
+          continue;
+        }
+      }
+
+      // Short options.
+      {
+        auto shortArg = arg.find(optionPrefixLong);
+        if(arg.startsWith(optionPrefixLong)) {
+          io.writefln("Found short arg: %s", arg);
+          args.popFront();
+          continue;
+        }
+      }
+
+      // Positional argument.
+      if(positionalArgDescs.empty) {
+        errors ~= `Did not expect positional argument: %s`.format(arg);
+        continue;
+      }
+
+
+      auto desc = positionalArgDescs.front();
+      scope(success) positionalArgDescs.popFront();
+
+      io.writefln("Found positional arg: %s (%s)", arg, desc.member);
+
+      // Positional Arguments.
+      alias Member = typeof(__traits(getMember, This, "theFoo"));
+      __traits(getMember, This, "theFoo") = arg.to!Member();
+
+
+      args.popFront();
+    }
+
+    if(!errors.empty) {
+      throw new Exception("Errors during parsing occurred:%(\n  %s%)");
+    }
 
     return args;
   }
 
-  @Hidden
   struct Required { @disable this(); }
 
-  @Hidden
   struct Option
   {
     string[] flagNames;
@@ -134,7 +195,6 @@ mixin template CommandLineArguments()
     }
   }
 
-  @Hidden
   struct Help
   {
     string content;
@@ -144,7 +204,6 @@ mixin template CommandLineArguments()
     this(string content) { this.content = content; }
   }
 
-  @Hidden
   struct Name
   {
     string name;
@@ -152,37 +211,6 @@ mixin template CommandLineArguments()
     @disable this();
     this(string name) { this.name = name; }
   }
-}
 
-struct Args
-{
-  mixin CommandLineArguments;
-
-  @Name("file_path")
-  @Required
-  @Help("The path to the file.")
-  Path filePath;
-
-  @Option("l", "last_loaded")
-  @Name("last_loaded")
-  @Help("Whether to load the last used model on startup.")
-  bool startWithLastLoaded = false;
-
-  @Option("s")
-  @Help("Load this scene instead of the default one.")
-  Path scene;
-
-  @Hidden
-  bool magic;
-
-  @Name("bobbels")
-  bool lawlypopz() { return false; }
-}
-
-void main()
-{
-  io.writeln("+++ Begin +++");
-  scope(exit) io.writeln("--- End ---");
-  auto args = Args();
-  args.parse();
+  struct Hidden { @disable this(); }
 }
