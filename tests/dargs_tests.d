@@ -12,12 +12,9 @@ class Tests
   @Test
   void simplePositional()
   {
-    debug io.writeln("In simplePositional");
-    debug scope(success) io.writeln("Exiting simplePositional");
-    
     static struct Args
     {
-      mixin CommandLineArguments;
+      mixin ArgsDescriptor;
 
       string theFoo;
     }
