@@ -5,25 +5,31 @@ import std.algorithm;
 import std.array;
 import std.range;
 import std.typetuple : allSatisfy;
-import std.traits : hasMember, isSomeString;
+import std.traits : hasMember, isSomeString, isTypeTuple;
+import std.typecons : Typedef;
 import io = std.stdio;
 
 
 debug = verboseAtCompileTime;
 
+struct ParseOptions
+{
+  bool strict;
+}
+
 
 /// Parse the run-time args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T args)
+public string[] parse(T)(ref T args, ParseOptions options = ParseOptions())
   if(isSomeArgsDescriptor!T)
 {
   import core.runtime;
-  return parse(args, Runtime.args);
+  return parse(args, Runtime.args[1..$], options);
 }
 
 /// Parse the given args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T args, string[] strargsIn)
+public string[] parse(T)(ref T args, string[] strargsIn, ParseOptions parseOptions = ParseOptions())
   if(isSomeArgsDescriptor!T)
 {
   import std.traits;
@@ -35,37 +41,125 @@ public string[] parse(T)(ref T args, string[] strargsIn)
 
   string[] errors;
 
+  scope(exit)
+  {
+    if(!errors.empty)
+    {
+      throw new Exception("Errors during parsing occurred:%-(\n  %s%)\nArguments were: %s".format(errors, strargsIn));
+    }
+  }
+
   auto strargs = strargsIn.dup;
 
-  debug io.writefln("Arg descriptions:%(\n  %)", args._argDescriptions);
+  debug io.writefln("Arg descriptions:%(\n  %s%)", args._argDescriptions);
 
   auto positionalArgDescs = args._argDescriptions.filter!(a => a.index >= 0);
+  auto optionDescs = args._argDescriptions.filter!(a => a.index < 0);
 
-  foreach(i, ref arg; strargsIn)
+  int i = 0;
+outer:
+  while (true)
   {
-    // Long options.
+    scope(exit) ++i;
+
+    if(strargs.empty) {
+      break outer;
+    }
+
+    const parseError = (string msg) {
+      errors ~= "Argument %s: %s".format(i + 1, msg);
+    };
+
+    auto arg = strargs.front;
+    strargs.popFront();
+
+    if(arg.startsWith("--")) // Long option.
     {
-      auto longArg = arg.find(args.optionPrefixLong);
-      if(arg.startsWith(args.optionPrefixLong)) {
-        io.writefln("Found long arg: %s", arg);
-        strargs.popFront();
+      arg.popFront();
+      arg.popFront();
+      auto theSplit = arg.findSplit("=");
+      auto name = theSplit[0];
+      auto value = theSplit[2];
+      auto memberDescPos = optionDescs.find!(a => !a.optNames.find(name).empty);
+      if(memberDescPos.empty) {
+        parseError(`Unknown option "%s"`.format(name));
         continue;
       }
+      auto memberDesc = memberDescPos.front;
+      if(memberDesc.isFlag)
+      {
+        if(!value.empty) {
+          parseError(`Unexpected value for flag "%s": %s`.format(name, value));
+        }
+        if(!theSplit[1].empty) {
+          parseError(`Unexpected delimiter for flag "%s".`.format(name));
+        }
+        memberDesc.set(args, "true");
+      }
+      else
+      {
+
+      }
+    }
+    else if(arg.startsWith("-")) // Short option.
+    {
+
+    }
+    else // Positional argument
+    {
+      if(positionalArgDescs.empty)
+      {
+        if(parseOptions.strict) {
+          parseError(`Did not expect positional argument: "%s"`.format(arg));
+        }
+        continue;
+      }
+
+      auto memberDesc = positionalArgDescs.front;
+      positionalArgDescs.popFront();
+
+      memberDesc.set(args, arg);
+    }
+  }
+
+  /*
+  foreach(i, ref arg; strargsIn)
+  {
+    const parseError = (string msg) {
+      errors ~= "Argument %s: %s".format(i + 1, msg);
+    };
+
+    scope(success) if(!strargs.empty) strargs.popFront();
+
+    // Long options.
+    if(arg.startsWith(args.optionPrefixLong))
+    {
+      debug io.writefln(`Found long arg: "%s"`, arg);
+      continue;
     }
 
     // Short options.
+    if(arg.startsWith(args.optionPrefixShort))
     {
-      auto shortArg = arg.find(args.optionPrefixShort);
-      if(arg.startsWith(args.optionPrefixShort)) {
-        io.writefln("Found short arg: %s", arg);
-        strargs.popFront();
+      debug io.writefln(`Found short arg: "%s"`, arg);
+
+      auto name = arg[args.optionPrefixShort.length];
+      auto descPos = optionDescs.find!(a => !a.optNames.find(name).empty);
+      if(descPos.empty) {
+        parseError("Unknown option: %s".format(name));
         continue;
       }
+      auto desc = descPos.front;
+      auto value = "";
+      desc.set(args, value);
+      continue;
     }
 
     // Positional argument.
     if(positionalArgDescs.empty) {
-      errors ~= `Did not expect positional argument: %s`.format(arg);
+      if(options.strict) {
+        parseError(`Did not expect positional argument: "%s"`.format(arg));
+      }
       continue;
     }
 
@@ -73,19 +167,12 @@ public string[] parse(T)(ref T args, string[] strargsIn)
     auto desc = positionalArgDescs.front();
     scope(success) positionalArgDescs.popFront();
 
-    io.writefln("Found positional arg: %s (%s)", arg, desc.member);
+    debug io.writefln(`Found positional arg: %s = "%s"`, desc.member, arg);
 
     // Positional Arguments.
     desc.set(args, arg);
-
-    io.writeln("Value set.");
-
-    strargs.popFront();
   }
-
-  if(!errors.empty) {
-    throw new Exception("Errors during parsing occurred:%(\n  %s%)");
-  }
+  */
 
   return strargs;
 }
@@ -94,10 +181,13 @@ struct ArgDesc(T)
 {
   string member;
   string name;
-  string[] flagNames;
+  string[] optNames;
   int index = -1; // <0 means it is an option, >=0 means it is a positional argument.
   string helpText;
   bool isRequired = false;
+  int numArgs = 1; // Only relevant if any optNames are set.
+
+  @property bool isFlag() const { return this.numArgs == 0; }
 
   // Setter of the argument value.
   void function(ref T, string) set = (ref _, __) { assert(0, "Invalid setter!"); };
@@ -113,6 +203,42 @@ private template Tuple(T...)
   alias Tuple = T;
 }
 
+/// Motivation: If T is a type already, typeof(T) does not compile.
+private template SafeTypeOf(alias T)
+{
+  static if(__traits(compiles, typeof(T)))
+    alias SafeTypeOf = typeof(T);
+  else
+    alias SafeTypeOf = T;
+}
+
+bool isIgnored(T, alias memberName)()
+{
+  static if(memberName[0] == '_') {
+    // Ignore variables starting with an underscore, e.g. __ctor.
+    return true;
+  }
+  else static if(!__traits(compiles, typeof(__traits(getMember, T, memberName)))) {
+    // Ignore members where we cannot take the type of. We are only interested in member variables.
+    return true;
+  }
+  else static if(hasMember!(ReferenceDescriptor, memberName)) {
+    // Ignore all members that are in the reference descriptor.
+    return true;
+  }
+  else
+  {
+    foreach(attr; __traits(getAttributes, __traits(getMember, T, memberName)))
+    {
+      // Check whether some UDA named @Hidden is present.
+      static if(SafeTypeOf!(attr).stringof == "Hidden") {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
 auto collectArgDescs(T)()
 {
   ArgDesc!T[] all;
@@ -121,69 +247,74 @@ members:
   foreach(memberName; __traits(allMembers, T))
   {
     debug(verboseAtCompileTime) pragma(msg, "Member: " ~ memberName);
-    static if(memberName[0] != '_' && __traits(compiles, typeof(__traits(getMember, T, memberName))))
+    static if(!isIgnored!(T, memberName))
     {
       alias Member = typeof(__traits(getMember, T, memberName));
-      alias Attributes = Tuple!(__traits(getAttributes, __traits(getMember, T, memberName)));
-      debug(verboseAtCompileTime) pragma(msg, "  Attributes: " ~ Attributes.stringof);
+      debug(verboseAtCompileTime)
+      {
+        alias Attributes = Tuple!(__traits(getAttributes, __traits(getMember, T, memberName)));
+        pragma(msg, "  Attributes: " ~ Attributes.stringof);
+      }
       auto desc = ArgDesc!T(memberName);
       foreach(attr; __traits(getAttributes, __traits(getMember, T, memberName)))
       {
-        static if(__traits(compiles, typeof(attr)))
-          alias Attr = typeof(attr);
-        else
-          alias Attr = attr;
+        alias Attr = SafeTypeOf!attr;
 
-        static if(is(Attr == T.Hidden) || is(attr == T.Hidden)) {
-          debug(verboseAtCompileTime) pragma(msg, "  No setter will be set.");
-          continue members;
+        static if(is(Attr == T.Name))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "Name".`);
+          static assert(__traits(compiles, desc.name = attr.name), `@Name must be used with arguments. E.g.: @Name("foo")`);
+          desc.name = attr.name;
+        }
+        else static if(is(Attr == T.Required))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "Required".`);
+          desc.isRequired = true;
+        }
+        else static if(is(Attr == T.Help))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "Help".`);
+          static assert(__traits(compiles, desc.helpText = attr.content), `@Help must be used with arguments. E.g.: @Help("Some explanation.")`);
+          desc.helpText = attr.content;
+        }
+        else static if(is(Attr == T.Option))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "Option".`);
+          static assert(__traits(compiles, desc.optNames = attr.optNames), `@Option must be used with arguments. E.g.: @Option("f", "file")`);
+          desc.optNames = attr.optNames;
+          desc.numArgs = attr.numArgs;
+        }
+        else static if(is(Attr == T.Flag))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "Flag".`);
+          static assert(__traits(compiles, desc.optNames = attr.optNames), `@Flag must be used with arguments. E.g.: @Flag("f", "file")`);
+          desc.optNames = attr.optNames;
+          desc.numArgs = attr.numArgs;
+        }
+        else static if(is(Attr == T.NumArgs))
+        {
+          debug(verboseAtCompileTime) pragma(msg, `  Found "NumArgs".`);
+          static assert(__traits(compiles, desc.numArgs = attr.value), `@NumArgs must be used with arguments. E.g.: @NumArgs(1)`);
+          desc.numArgs = attr.value;
         }
         else
         {
-          static if(is(Attr == T.Name))
-          {
-            debug(verboseAtCompileTime) pragma(msg, `  Found "Name".`);
-            static assert(__traits(compiles, desc.name = attr.name), `@Name must be used with arguments. E.g.: @Name("foo")`);
-            desc.name = attr.name;
-          }
-          else static if(is(Attr == T.Required))
-          {
-            debug(verboseAtCompileTime) pragma(msg, `  Found "Required".`);
-            desc.isRequired = true;
-          }
-          else static if(is(Attr == T.Help))
-          {
-            debug(verboseAtCompileTime) pragma(msg, `  Found "Required".`);
-            static assert(__traits(compiles, desc.helpText = attr.content), `@Help must be used with arguments. E.g.: @Help("Some explanation.")`);
-            desc.helpText = attr.content;
-          }
-          else static if(is(Attr == T.Option))
-          {
-            debug(verboseAtCompileTime) pragma(msg, `  Found "Option".`);
-            static assert(__traits(compiles, desc.flagNames = attr.flagNames), `@Option must be used with arguments. E.g.: @Option("f", "file")`);
-            desc.flagNames = attr.flagNames;
-          }
-          else
-          {
-            debug(verboseAtCompileTime) pragma(msg, "  Warning: Unrecognized attribute type: " ~ Attr.stringof);
-          }
+          debug(verboseAtCompileTime) pragma(msg, "  Warning: Unrecognized attribute type: " ~ Attr.stringof);
         }
       }
 
-      static if(memberName == "parse")
-        desc.set = (ref _, __) => assert(0, "Invalid call");
-
       desc.set = (ref instance, value)
       {
+        debug(verboseAtCompileTime) pragma(msg, "    Member name: " ~ memberName ~ " of type " ~ Member.stringof);
         // If the member accepts a string directly, do not attempt any conversions.
         static if(__traits(compiles, mixin("instance." ~ memberName ~ " = value")))
           mixin("instance." ~ memberName ~ " = value;");
-        else static if(__traits(compiles, mixin("instance." ~ memberName ~ " = value.to!Member")))
-          mixin("instance." ~ memberName ~ " = value.to!Member;");
+        else static if(__traits(compiles, mixin("instance." ~ memberName ~ " = value.to!Member()")))
+          mixin("instance." ~ memberName ~ " = value.to!Member();");
         else static assert(0, "Unreachable.");
       };
 
-      if(desc.flagNames.empty) {
+      if(desc.optNames.empty) {
         // We have a positional argument, so we set its index;
         desc.index = currentIndex++;
       }
@@ -212,21 +343,30 @@ mixin template ArgsDescriptor()
 
   struct Required { @disable this(); }
 
-  struct Option
+  struct NumArgs
   {
-    string[] flagNames;
+    int value;
+  }
+
+  struct _OptionImpl(int defaultNumArgs)
+  {
+    string[] optNames;
+    int numArgs = defaultNumArgs;
 
     @disable this();
 
-    this(FlagNames...)(FlagNames flagNames)
+    this(FlagNames...)(FlagNames optNames)
       if(allSatisfy!(isSomeString, FlagNames))
     {
-      foreach(ref flagName; flagNames)
+      foreach(ref arg; optNames)
       {
-        this.flagNames ~= flagName;
+        this.optNames ~= arg;
       }
     }
   }
+
+  alias Flag = _OptionImpl!0;
+  alias Option = _OptionImpl!1;
 
   struct Help
   {
@@ -246,4 +386,9 @@ mixin template ArgsDescriptor()
   }
 
   struct Hidden { @disable this(); }
+}
+
+private struct ReferenceDescriptor
+{
+  mixin ArgsDescriptor;
 }
