@@ -25,7 +25,7 @@ class Tests
   }
 
   @Test
-  void simpleFlag()
+  void simpleFlagShort()
   {
     static struct Args
     {
@@ -41,7 +41,23 @@ class Tests
   }
 
   @Test
-  void simpleOption()
+  void simpleFlagLong()
+  {
+    static struct Args
+    {
+      mixin ArgsDescriptor;
+
+      @Flag("--force")
+      bool force;
+    }
+    auto args = Args();
+    auto remaining = args.parse(["--force"]);
+    assertTrue(args.force);
+    assertEmpty(remaining);
+  }
+
+  @Test
+  void simpleOptionShort()
   {
     static struct Args
     {
@@ -51,7 +67,23 @@ class Tests
       int level;
     }
     auto args = Args();
-    auto remaining = args.parse(["-l 42"]);
+    auto remaining = args.parse(["-l", "42"]);
+    assertEquals(42, args.level);
+    assertEmpty(remaining);
+  }
+
+  @Test
+  void simpleOptionLong()
+  {
+    static struct Args
+    {
+      mixin ArgsDescriptor;
+
+      @Option("--level")
+      int level;
+    }
+    auto args = Args();
+    auto remaining = args.parse(["--level", "42"]);
     assertEquals(42, args.level);
     assertEmpty(remaining);
   }
@@ -72,7 +104,7 @@ class Tests
     }
     auto args = Args();
     auto strargs = ["the answer is 42.", "You better believe it!"];
-    auto remaining = args.parse(strargs, ParseOptions(true));
+    auto remaining = args.parse(strargs, ParseOptions(false));
     assertEmpty(args.foo);
     assertEquals("the answer is 42.", args.bar);
     assertEmpty(args._baz);

@@ -10,26 +10,31 @@ import std.typecons : Typedef;
 import io = std.stdio;
 
 
-debug = verboseAtCompileTime;
+//debug = verboseAtCompileTime;
 
 struct ParseOptions
 {
   bool strict;
+
+  string toString() const
+  {
+    return `ParseOptions(strict = %s)`.format(this.strict);
+  }
 }
 
 
 /// Parse the run-time args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T args, ParseOptions options = ParseOptions())
+public string[] parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
   if(isSomeArgsDescriptor!T)
 {
   import core.runtime;
-  return parse(args, Runtime.args[1..$], options);
+  return parse(args, Runtime.args[1..$], parseOptions);
 }
 
 /// Parse the given args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T args, string[] strargsIn, ParseOptions parseOptions = ParseOptions())
+public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseOptions = ParseOptions())
   if(isSomeArgsDescriptor!T)
 {
   import std.traits;
@@ -45,70 +50,116 @@ public string[] parse(T)(ref T args, string[] strargsIn, ParseOptions parseOptio
   {
     if(!errors.empty)
     {
-      throw new Exception("Errors during parsing occurred:%-(\n  %s%)\nArguments were: %s".format(errors, strargsIn));
+      auto msg = "Errors during parsing occurred:%-(\n  %s%)\nArguments were: %s".format(errors, args);
+      debug msg = "%s\n%s".format(msg, parseOptions.to!string());
+      throw new Exception(msg);
     }
   }
 
-  auto strargs = strargsIn.dup;
+  debug io.writefln("Arg descriptions:%(\n  %s%)", argsContainer._argDescriptions);
 
-  debug io.writefln("Arg descriptions:%(\n  %s%)", args._argDescriptions);
-
-  auto positionalArgDescs = args._argDescriptions.filter!(a => a.index >= 0);
-  auto optionDescs = args._argDescriptions.filter!(a => a.index < 0);
+  auto positionalArgDescs = argsContainer._argDescriptions.filter!(a => a.index >= 0);
+  auto optionDescs = argsContainer._argDescriptions.filter!(a => a.index < 0);
 
   int i = 0;
-outer:
   while (true)
   {
     scope(exit) ++i;
 
-    if(strargs.empty) {
-      break outer;
+    // If we don't have anything to parse anymore, we stop parsing.
+    if(args.empty) {
+      break;
+    }
+
+    // If there are no more possible arguments to set, we are done as well.
+    if(positionalArgDescs.empty && optionDescs.empty) {
+      break;
     }
 
     const parseError = (string msg) {
       errors ~= "Argument %s: %s".format(i + 1, msg);
     };
 
-    auto arg = strargs.front;
-    strargs.popFront();
+    auto arg = args.front;
+    args.popFront();
 
-    if(arg.startsWith("--")) // Long option.
+    debug io.writefln("Arg: %s", arg);
+
+    enum OptionType { Positional, Long, Short }
+    auto type = OptionType.Positional;
+
+    if(arg.startsWith("--")) {
+      type = OptionType.Long;
+    }
+    else if(arg.startsWith("-")) {
+      type = OptionType.Short;
+    }
+
+    io.writefln("Option Type: %s", type);
+
+    if(type != OptionType.Positional && optionDescs.empty)
     {
-      arg.popFront();
-      arg.popFront();
+      parseError(`Unexpected option "%s". Duplicate?`.format(arg));
+      continue;
+    }
+
+    if(type != OptionType.Positional)
+    {
+      // Split by '='. E.g.: "foo=bar=baz" => ["foo", "=", "bar=baz"];
       auto theSplit = arg.findSplit("=");
       auto name = theSplit[0];
       auto value = theSplit[2];
-      auto memberDescPos = optionDescs.find!(a => !a.optNames.find(name).empty);
-      if(memberDescPos.empty) {
+      auto optionPos = optionDescs.find!(a => !a.optNames.find(name).empty);
+      if(optionPos.empty) {
         parseError(`Unknown option "%s"`.format(name));
         continue;
       }
-      auto memberDesc = memberDescPos.front;
-      if(memberDesc.isFlag)
+      auto optionDesc = optionPos.front; // the result of "find".
+      if(optionDesc.isFlag)
       {
         if(!value.empty) {
           parseError(`Unexpected value for flag "%s": %s`.format(name, value));
+          continue;
         }
         if(!theSplit[1].empty) {
           parseError(`Unexpected delimiter for flag "%s".`.format(name));
+          continue;
         }
-        memberDesc.set(args, "true");
+
+        value = "true";
       }
-      else
+      // The value might be in the next argument, e.g. `--hello world` instead of `--hello=world`
+      else if(value.empty)
       {
+        // Invalid if no more arguments are left at this point.
+        if(args.empty)
+          goto missingArgument;
+        
+        // Make sure the current `arg` is up to date.
+        arg = args.front;
+        args.popFront();
 
+        if(arg.startsWith(argsContainer.optionPrefixLong) || arg.startsWith(argsContainer.optionPrefixShort))
+          goto missingArgument;
+
+        // `arg` is the new `value`.
+        value = arg;
+        goto argumentFound;
+
+      missingArgument:
+          parseError(`Missing argument for option "%s".`.format(name));
+          continue;
+      argumentFound:
       }
-    }
-    else if(arg.startsWith("-")) // Short option.
-    {
 
+      optionDesc.set(argsContainer, value);
     }
-    else // Positional argument
+    else
     {
       if(positionalArgDescs.empty)
       {
+        // At this point, we have no unprocessed positional arguments left,
+        // which means there was more supplied than expected.
         if(parseOptions.strict) {
           parseError(`Did not expect positional argument: "%s"`.format(arg));
         }
@@ -118,63 +169,11 @@ outer:
       auto memberDesc = positionalArgDescs.front;
       positionalArgDescs.popFront();
 
-      memberDesc.set(args, arg);
+      memberDesc.set(argsContainer, arg);
     }
   }
 
-  /*
-  foreach(i, ref arg; strargsIn)
-  {
-    const parseError = (string msg) {
-      errors ~= "Argument %s: %s".format(i + 1, msg);
-    };
-
-    scope(success) if(!strargs.empty) strargs.popFront();
-
-    // Long options.
-    if(arg.startsWith(args.optionPrefixLong))
-    {
-      debug io.writefln(`Found long arg: "%s"`, arg);
-      continue;
-    }
-
-    // Short options.
-    if(arg.startsWith(args.optionPrefixShort))
-    {
-      debug io.writefln(`Found short arg: "%s"`, arg);
-
-      auto name = arg[args.optionPrefixShort.length];
-      auto descPos = optionDescs.find!(a => !a.optNames.find(name).empty);
-      if(descPos.empty) {
-        parseError("Unknown option: %s".format(name));
-        continue;
-      }
-      auto desc = descPos.front;
-      auto value = "";
-      desc.set(args, value);
-      continue;
-    }
-
-    // Positional argument.
-    if(positionalArgDescs.empty) {
-      if(options.strict) {
-        parseError(`Did not expect positional argument: "%s"`.format(arg));
-      }
-      continue;
-    }
-
-
-    auto desc = positionalArgDescs.front();
-    scope(success) positionalArgDescs.popFront();
-
-    debug io.writefln(`Found positional arg: %s = "%s"`, desc.member, arg);
-
-    // Positional Arguments.
-    desc.set(args, arg);
-  }
-  */
-
-  return strargs;
+  return args;
 }
 
 struct ArgDesc(T)
