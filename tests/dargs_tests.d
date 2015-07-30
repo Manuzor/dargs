@@ -112,7 +112,7 @@ class Tests
   }
 
   @Test
-  void property()
+  void stringProperty()
   {
     static struct Args
     {
@@ -132,6 +132,33 @@ class Tests
     auto args = Args();
     args.parse(["foo"], ParseOptions(true));
     assertEquals("foo_bar", args.theValue);
+  }
+
+  @Test
+  void intProperty()
+  {
+    static struct Args
+    {
+      mixin ArgsDescriptor;
+
+      @Hidden
+      int value;
+
+      // Note that names don't matter much here.
+      void valueProperty(int value) @property
+      {
+        this.value = value;
+      }
+
+      int valueProperty() @property
+      {
+        return this.value;
+      }
+    }
+
+    auto args = Args();
+    args.parse(["42"], ParseOptions(true));
+    assertEquals(42, args.value);
   }
 }
 

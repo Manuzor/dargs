@@ -13,6 +13,7 @@ import std.format;
 
 
 //debug = verboseAtCompileTime;
+//debug = verboseAtRunTime;
 
 struct ParseOptions
 {
@@ -51,7 +52,7 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
     }
   }
 
-  debug io.writefln("Arg descriptions:%(\n  %s%)", argsContainer._argDescriptions);
+  debug(verboseAtRunTime) io.writefln("Arg descriptions:%(\n  %s%)", argsContainer._argDescriptions);
 
   auto positionalArgDescs = argsContainer._argDescriptions.filter!(a => a.index >= 0);
   auto optionDescs = argsContainer._argDescriptions.filter!(a => a.index < 0);
@@ -78,7 +79,7 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
     auto arg = args.front;
     args.popFront();
 
-    debug io.writefln("Arg: %s", arg);
+    debug(verboseAtRunTime) io.writefln("Arg: %s", arg);
 
     enum OptionType { Positional, Long, Short }
     auto type = OptionType.Positional;
@@ -90,7 +91,7 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
       type = OptionType.Short;
     }
 
-    io.writefln("Option Type: %s", type);
+    debug(verboseAtRunTime) io.writefln("Option Type: %s", type);
 
     if(type != OptionType.Positional && optionDescs.empty)
     {
