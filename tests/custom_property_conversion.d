@@ -19,6 +19,7 @@ class CustomPropertyConversion
     @Hidden
     Data data;
 
+    @Option("--data")
     void dataConverter(string value) @property
     {
       import std.array : split;
@@ -36,7 +37,7 @@ class CustomPropertyConversion
   void test()
   {
     auto args = Args();
-    args.parse(["1;2;3.14"]);
+    args.parse(["--data", "1;2;3.14"]);
     assertEquals(Data(1, 2, 3.14f), args.data);
   }
 }

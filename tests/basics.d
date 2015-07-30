@@ -1,11 +1,9 @@
-module dargs_tests;
-
-import io = std.stdio;
 import dunit;
 import dargs;
+import std.algorithm;
 
 
-class Tests
+class Basics
 {
   mixin UnitTest;
 
@@ -104,7 +102,7 @@ class Tests
     }
     auto args = Args();
     auto strargs = ["the answer is 42.", "You better believe it!"];
-    auto remaining = args.parse(strargs, ParseOptions(false));
+    auto remaining = args.parse(strargs);
     assertEmpty(args.foo);
     assertEquals("the answer is 42.", args.bar);
     assertEmpty(args._baz);
@@ -123,10 +121,7 @@ class Tests
 
       void complex(string value) @property
       {
-        io.writefln("Value: %s", value);
-        io.writefln("Expected: %s_%s", value, this.theValue);
         this.theValue = value ~ "_" ~ this.theValue;
-        io.writefln("Result: %s", this.theValue);
       }
     }
     auto args = Args();
@@ -159,6 +154,34 @@ class Tests
     auto args = Args();
     args.parse(["42"], ParseOptions(true));
     assertEquals(42, args.value);
+  }
+
+  @Test
+  void remainingArgs()
+  {
+    static struct Args
+    {
+      mixin ArgsDescriptor;
+
+      string a;
+      string b;
+      string c;
+    }
+
+    auto strargs = "A B C D E F G H".splitter();
+    auto args = Args();
+    auto remaining = args.parse(strargs);
+    assertEquals("A", args.a);
+    assertEquals("B", args.b);
+    assertEquals("C", args.c);
+    assertEquals("D E F G H".splitter(), remaining);
+
+    remaining = args.parse(remaining);
+    assertEquals("D", args.a);
+    assertEquals("E", args.b);
+    assertEquals("F", args.c);
+    assertEquals("G H".splitter(), remaining);
+    assertEquals("G H".splitter(), args.parse(args.parse(strargs)));
   }
 }
 

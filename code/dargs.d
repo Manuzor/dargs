@@ -18,6 +18,8 @@ import std.format;
 struct ParseOptions
 {
   bool strict;
+  bool greedy;
+  bool stopAfterPositionals;
 
   string toString() const
   {
@@ -28,7 +30,7 @@ struct ParseOptions
 
 /// Parse the run-time args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
+public auto parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
   if(isSomeArgsDescriptor!T)
 {
   import core.runtime;
@@ -37,16 +39,17 @@ public string[] parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
 
 /// Parse the given args.
 /// Return: The remaining args that have not been parsed.
-public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseOptions = ParseOptions())
-  if(isSomeArgsDescriptor!T)
+public auto parse(T, R)(ref T argsContainer, R args, ParseOptions parseOptions = ParseOptions())
+  if(isSomeArgsDescriptor!T && isInputRange!R)
 {
   string[] errors;
+  const originalArgs = args;
 
   scope(exit)
   {
     if(!errors.empty)
     {
-      auto msg = "Errors during parsing occurred:%-(\n  %s%)\nArguments were: %s".format(errors, args);
+      auto msg = "Errors during parsing occurred:%-(\n  %s%)\nArguments were: %s".format(errors, array(cast()originalArgs));
       debug msg = "%s\n%s".format(msg, parseOptions.to!string());
       throw new Exception(msg);
     }
@@ -72,11 +75,16 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
       break;
     }
 
+    if(positionalArgDescs.empty && parseOptions.stopAfterPositionals) {
+      break;
+    }
+
     const parseError = (string msg) {
       errors ~= "Argument %s: %s".format(i + 1, msg);
     };
 
     auto arg = args.front;
+    auto prevArgs = args;
     args.popFront();
 
     debug(verboseAtRunTime) io.writefln("Arg: %s", arg);
@@ -107,7 +115,7 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
       auto value = theSplit[2];
       auto optionPos = optionDescs.find!(a => !a.optNames.find(name).empty);
       if(optionPos.empty) {
-        parseError(`Unknown option "%s"`.format(name));
+        parseError(`Unknown option "%s". Candidates: %s`.format(name, optionDescs.map!(a => a.optNames[0]).array));
         continue;
       }
       auto optionDesc = optionPos.front; // the result of "find".
@@ -159,7 +167,12 @@ public string[] parse(T)(ref T argsContainer, string[] args, ParseOptions parseO
         if(parseOptions.strict) {
           parseError(`Did not expect positional argument: "%s"`.format(arg));
         }
-        continue;
+        if(parseOptions.greedy) {
+          continue;
+        }
+        // Restore previous args since we don't want to consume the current arg.
+        args = prevArgs;
+        break;
       }
 
       auto memberDesc = positionalArgDescs.front;
@@ -333,6 +346,11 @@ members:
         // We have a positional argument, so we set its index;
         desc.index = currentIndex++;
       }
+
+      if(desc.name.empty) {
+        desc.name = memberName;
+      }
+
       all ~= desc;
     }
   }
