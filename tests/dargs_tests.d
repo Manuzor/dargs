@@ -112,7 +112,6 @@ class Tests
   }
 
   @Test
-  @Ignore("Not implemented.")
   void property()
   {
     static struct Args
@@ -122,13 +121,16 @@ class Tests
       @Hidden
       string theValue = "bar";
 
-      @property void complex(string value)
+      void complex(string value) @property
       {
-        theValue = value ~ "_" ~ theValue;
+        io.writefln("Value: %s", value);
+        io.writefln("Expected: %s_%s", value, this.theValue);
+        this.theValue = value ~ "_" ~ this.theValue;
+        io.writefln("Result: %s", this.theValue);
       }
     }
     auto args = Args();
-    args.parse(["foo"]);
+    args.parse(["foo"], ParseOptions(true));
     assertEquals("foo_bar", args.theValue);
   }
 }
