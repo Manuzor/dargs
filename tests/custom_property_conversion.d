@@ -34,7 +34,7 @@ class CustomPropertyConversion
   }
 
   @Test
-  void test()
+  void stringProperty()
   {
     auto args = Args();
     args.parse(["--data", "1;2;3.14"]);

@@ -2,6 +2,8 @@ import dunit;
 import dargs;
 import std.algorithm;
 
+debug import io = std.stdio;
+
 
 class Basics
 {
@@ -84,6 +86,26 @@ class Basics
     auto remaining = args.parse(["--level", "42"]);
     assertEquals(42, args.level);
     assertEmpty(remaining);
+  }
+
+  @Test
+  void multipleOptions()
+  {
+    static struct Args
+    {
+      mixin ArgsDescriptor;
+
+      @Option("-a")
+      string a;
+
+      @Option("-b")
+      string b;
+    }
+
+    auto args = Args();
+    args.parse("-a 1 -b 2".splitter);
+    assertEquals("1", args.a);
+    assertEquals("2", args.b);
   }
 
   @Test

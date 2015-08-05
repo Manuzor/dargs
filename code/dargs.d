@@ -1,12 +1,11 @@
 module dargs;
 
-import pathlib;
 import std.algorithm;
 import std.array;
 import std.range;
 import std.typetuple : allSatisfy;
 import std.traits;
-import std.typecons : Typedef;
+import std.typecons;
 import io = std.stdio;
 import std.conv : to;
 import std.format;
@@ -31,7 +30,7 @@ struct ParseOptions
 /// Parse the run-time args.
 /// Return: The remaining args that have not been parsed.
 public auto parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
-  if(isSomeArgsDescriptor!T)
+  if(isSomeArgsDescriptor!T && !is(T == const))
 {
   import core.runtime;
   return parse(args, Runtime.args[1..$], parseOptions);
@@ -40,7 +39,7 @@ public auto parse(T)(ref T args, ParseOptions parseOptions = ParseOptions())
 /// Parse the given args.
 /// Return: The remaining args that have not been parsed.
 public auto parse(T, R)(ref T argsContainer, R args, ParseOptions parseOptions = ParseOptions())
-  if(isSomeArgsDescriptor!T && isInputRange!R)
+  if(isSomeArgsDescriptor!T && !is(T == const) && isInputRange!R)
 {
   string[] errors;
   const originalArgs = args;
@@ -55,10 +54,11 @@ public auto parse(T, R)(ref T argsContainer, R args, ParseOptions parseOptions =
     }
   }
 
-  debug(verboseAtRunTime) io.writefln("Arg descriptions:%(\n  %s%)", argsContainer._argDescriptions);
-
-  auto positionalArgDescs = argsContainer._argDescriptions.filter!(a => a.index >= 0);
-  auto optionDescs = argsContainer._argDescriptions.filter!(a => a.index < 0);
+  // cast() is safe here because _argDescriptions is immutable.
+  auto argDescs = cast()argsContainer._argDescriptions;
+  debug(verboseAtRunTime) io.writefln("Arg descriptions:%(\n  %s%)", argDescs);
+  auto positionalArgDescs = argDescs.filter!(a => !a.isOption)();
+  auto optionDescs = argDescs.filter!(a => a.isOption)();
 
   int i = 0;
   while (true)
@@ -185,6 +185,48 @@ public auto parse(T, R)(ref T argsContainer, R args, ParseOptions parseOptions =
   return args;
 }
 
+string usage(T)(ref in T argsContainer)
+{
+  auto result = appender(executableName);
+  auto argDescs = cast()T._argDescriptions;
+  io.writefln("argDescs: %s", argDescs);
+  foreach(ref arg; argDescs)
+  {
+    result ~= " ";
+
+    if(!arg.isRequired) {
+      result ~= "[";
+    }
+
+    if(arg.isOption) {
+      result ~= arg.optNames[0];
+    }
+    else {
+      result ~= arg.name;
+    }
+
+    if(!arg.isRequired) {
+      result ~= "]";
+    }
+  }
+
+  return result.data;
+}
+
+string generateHelp(T)(ref in T argsContainer)
+{
+  auto help = argsContainer.usage();
+  // TODO
+  return help;
+}
+
+@property string executableName()
+{
+  import core.runtime;
+  import std.path;
+  return Runtime.args[0].baseName().stripExtension();
+}
+
 struct ArgDesc(T)
 {
   string member;
@@ -195,18 +237,25 @@ struct ArgDesc(T)
   bool isRequired = false;
   int numArgs = 1; // Only relevant if any optNames are set.
 
+  @property bool isOption() const { return this.index < 0; }
   @property bool isFlag() const { return this.numArgs == 0; }
 
   // Setter of the argument value.
-  void function(ref T, string) set = (ref _, __) { assert(0, "Invalid setter!"); };
+  @property void function(ref T, string) set = (ref _, __) { assert(0, "Invalid setter!"); };
+
+  string toString() const
+  {
+    return `ArgDesc("%s", %s)`.format(this.name, this.optNames);
+    //return `ArgDesc(member="%s", name="%s", optNames=%s, index=%s, helpText="%s", isRequired=%s, numArgs=%s)`.format(member, name, optNames, index, helpText, isRequired, numArgs);
+  }
 }
 
-private template ResolveType(T)
+template ResolveType(T)
 {
   alias ResolveType = T;
 }
 
-private template Tuple(T...)
+template Tuple(T...)
 {
   alias Tuple = T;
 }
@@ -220,11 +269,10 @@ private template SafeTypeOf(alias T)
     alias SafeTypeOf = T;
 }
 
-bool hasUdaWithName(T, alias memberName, alias udaName)()
+static bool hasUdaWithName(T, alias memberName, alias udaName)()
 {
   foreach(attr; __traits(getAttributes, __traits(getMember, T, memberName)))
   {
-    // Check whether some UDA named @Hidden is present.
     static if(SafeTypeOf!(attr).stringof == udaName)
     {
       return true;
@@ -233,7 +281,11 @@ bool hasUdaWithName(T, alias memberName, alias udaName)()
   return false;
 }
 
-bool isIgnored(T, alias memberName)()
+// The following members are generally ignored:
+// * Members whose names starts with an underscore, e.g. "_force".
+// * Members with a UDA named "Hidden". Use @Hidden within your ArgsDescriptor struct.
+// * Non-property functions.
+static bool isIgnored(T, alias memberName)()
 {
   static if(memberName[0] == '_') {
     // Ignore variables starting with an underscore, e.g. __ctor.
@@ -265,99 +317,127 @@ bool isIgnored(T, alias memberName)()
   }
 }
 
-auto collectArgDescs(T)()
+private void setDescMemberFromAttr(T, Attr, alias attr, Desc)(ref Desc desc)
 {
-  ArgDesc!T[] all;
-  int currentIndex = 0;
-members:
+  debug(verboseAtCompileTime) pragma(msg, "In setDescMemberFromAttr");
+  static if(is(Attr == T.Name))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "Name".`);
+    desc.name = attr.name;
+    static assert(__traits(compiles, attr.name), `@Name must be used with arguments. E.g.: @Name("foo")`);
+  }
+  else static if(is(Attr == T.Required))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "Required".`);
+    desc.isRequired = true;
+  }
+  else static if(is(Attr == T.Help))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "Help".`);
+    desc.helpText = attr.content;
+    static assert(__traits(compiles, attr.content), `@Help must be used with arguments. E.g.: @Help("Some explanation.")`);
+  }
+  else static if(is(Attr == T.Option))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "Option".`);
+    desc.optNames = attr.optNames;
+    desc.numArgs = attr.numArgs;
+    static assert(__traits(compiles, attr.optNames), `@Option must be used with arguments. E.g.: @Option("f", "file")`);
+  }
+  else static if(is(Attr == T.Flag))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "Flag".`);
+    desc.optNames = attr.optNames;
+    desc.numArgs = attr.numArgs;
+    static assert(__traits(compiles, desc.optNames = attr.optNames), `@Flag must be used with arguments. E.g.: @Flag("f", "file")`);
+  }
+  else static if(is(Attr == T.NumArgs))
+  {
+    debug(verboseAtCompileTime) pragma(msg, `    Found "NumArgs".`);
+    desc.numArgs = attr.value;
+    static assert(__traits(compiles, desc.numArgs = attr.value), `@NumArgs must be used with arguments. E.g.: @NumArgs(1)`);
+  }
+  else
+  {
+    debug(verboseAtCompileTime) pragma(msg, "    Warning: Unrecognized attribute type: " ~ Attr.stringof);
+  }
+}
+
+private static void descSetter(T, alias memberName, Member)(ref T instance, string strValue)
+{
+  // If the member accepts a string directly, do not attempt any conversions.
+  static if(__traits(compiles, mixin("instance." ~ memberName ~ " = strValue")))
+  {
+    mixin("instance." ~ memberName ~ " = strValue;");
+  }
+  else static if(__traits(compiles, mixin("instance." ~ memberName ~ " = strValue.to!Member()")))
+  {
+    import std.conv : to;
+    mixin("instance." ~ memberName ~ " = strValue.to!Member();");
+  }
+  else
+  {
+    static assert(0, "Unreachable. Do you have a @property function without a getter?");
+  }
+}
+
+static auto collectArgDescs(T)()
+{
+  alias Members = Tuple!(__traits(allMembers, T));
+
+  ArgDesc!T[Members.length] all;
+
+  int currentPositionalIndex = 0;
   debug(verboseAtCompileTime) pragma(msg, "In " ~ fullyQualifiedName!T);
-  foreach(memberName; __traits(allMembers, T))
+  foreach(i, memberName; Members)
   {
     debug(verboseAtCompileTime) pragma(msg, "  Member: " ~ memberName);
     static if(!isIgnored!(T, memberName))
     {
+      auto desc = &all[i];
+
       static if(__traits(compiles, typeof(__traits(getMember, T, memberName))))
+      {
         alias Member = typeof(__traits(getMember, T, memberName));
+      }
+      else
+      {
+        alias Member = void;
+      }
 
       debug(verboseAtCompileTime)
       {
         alias Attributes = Tuple!(__traits(getAttributes, __traits(getMember, T, memberName)));
         pragma(msg, "    Attributes: " ~ Attributes.stringof);
       }
-      auto desc = ArgDesc!T(memberName);
+
+      desc.member = memberName;
       foreach(attr; __traits(getAttributes, __traits(getMember, T, memberName)))
       {
-        alias Attr = SafeTypeOf!attr;
-
-        static if(is(Attr == T.Name))
         {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "Name".`);
-          static assert(__traits(compiles, desc.name = attr.name), `@Name must be used with arguments. E.g.: @Name("foo")`);
-          desc.name = attr.name;
-        }
-        else static if(is(Attr == T.Required))
-        {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "Required".`);
-          desc.isRequired = true;
-        }
-        else static if(is(Attr == T.Help))
-        {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "Help".`);
-          static assert(__traits(compiles, desc.helpText = attr.content), `@Help must be used with arguments. E.g.: @Help("Some explanation.")`);
-          desc.helpText = attr.content;
-        }
-        else static if(is(Attr == T.Option))
-        {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "Option".`);
-          static assert(__traits(compiles, desc.optNames = attr.optNames), `@Option must be used with arguments. E.g.: @Option("f", "file")`);
-          desc.optNames = attr.optNames;
-          desc.numArgs = attr.numArgs;
-        }
-        else static if(is(Attr == T.Flag))
-        {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "Flag".`);
-          static assert(__traits(compiles, desc.optNames = attr.optNames), `@Flag must be used with arguments. E.g.: @Flag("f", "file")`);
-          desc.optNames = attr.optNames;
-          desc.numArgs = attr.numArgs;
-        }
-        else static if(is(Attr == T.NumArgs))
-        {
-          debug(verboseAtCompileTime) pragma(msg, `    Found "NumArgs".`);
-          static assert(__traits(compiles, desc.numArgs = attr.value), `@NumArgs must be used with arguments. E.g.: @NumArgs(1)`);
-          desc.numArgs = attr.value;
-        }
-        else
-        {
-          debug(verboseAtCompileTime) pragma(msg, "    Warning: Unrecognized attribute type: " ~ Attr.stringof);
+          alias Attr = SafeTypeOf!attr;
+          setDescMemberFromAttr!(T, Attr, attr)(*desc);
         }
       }
 
-      desc.set = (ref instance, strValue)
-      {
-        // If the member accepts a string directly, do not attempt any conversions.
-        static if(__traits(compiles, mixin("instance." ~ memberName ~ " = strValue")))
-          mixin("instance." ~ memberName ~ " = strValue;");
-        else static if(__traits(compiles, mixin("instance." ~ memberName ~ " = strValue.to!Member()")))
-          mixin("instance." ~ memberName ~ " = strValue.to!Member();");
-        else static assert(0, "Unreachable. Do you have a @property function without a getter?");
-      };
+      //desc.set = &makeSetter!(T, memberName, Member).makeSetter;
+      desc.set = &descSetter!(T, memberName, Member);
 
       if(desc.optNames.empty) {
         // We have a positional argument, so we set its index;
-        desc.index = currentIndex++;
+        desc.index = currentPositionalIndex++;
       }
 
       if(desc.name.empty) {
         desc.name = memberName;
       }
-
-      all ~= desc;
     }
   }
 
   static if(!is(T == ReferenceDescriptor))
     assert(!all.empty, "No argument descriptions found in " ~ fullyQualifiedName!T);
-  return all;
+
+  return all[].filter!(a => !a.member.empty);
 }
 
 
@@ -368,21 +448,23 @@ template isSomeArgsDescriptor(T) {
 
 mixin template ArgsDescriptor()
 {
+  static import dargs;
+  //import std.array : array;
+
   alias This = typeof(this);
 
-  static const _argDescriptions = collectArgDescs!This();
+  static immutable _argDescriptions = dargs.collectArgDescs!This();
 
   @Hidden string optionPrefixShort = "-";
   @Hidden string optionPrefixLong = "--";
 
-  @disable this(ArgDesc!This[]);
+  @disable this(dargs.ArgDesc!This[]);
 
   struct Required { @disable this(); }
-
-  struct NumArgs
-  {
-    int value;
-  }
+  struct NumArgs { int value; }
+  struct Help { string content; }
+  struct Name { string name; }
+  struct Hidden { @disable this(); }
 
   struct _OptionImpl(int defaultNumArgs)
   {
@@ -396,34 +478,12 @@ mixin template ArgsDescriptor()
     this(FlagNames...)(FlagNames optNames)
       if(allSatisfy!(isSomeString, FlagNames))
     {
-      foreach(ref arg; optNames)
-      {
-        this.optNames ~= arg;
-      }
+      this.optNames = [optNames];
     }
   }
 
   alias Flag = _OptionImpl!0;
   alias Option = _OptionImpl!1;
-
-  struct Help
-  {
-    string content;
-
-    @disable this();
-
-    this(string content) { this.content = content; }
-  }
-
-  struct Name
-  {
-    string name;
-
-    @disable this();
-    this(string name) { this.name = name; }
-  }
-
-  struct Hidden { @disable this(); }
 }
 
 private struct ReferenceDescriptor
